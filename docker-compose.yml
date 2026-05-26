@@ -1,0 +1,162 @@
+name: ai-survival-kit
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ask-ollama
+    profiles: [basic, creator, bunker]
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
+      - OLLAMA_HOST=0.0.0.0
+    # GPU NVIDIA: descomenta el bloque deploy si tienes nvidia-container-toolkit instalado.
+    # En macOS, Docker no expone Metal: para acelerar en Apple Silicon, instala Ollama
+    # nativo (https://ollama.com/download) y deja este servicio detenido.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ask-open-webui
+    profiles: [basic, creator, bunker]
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    ports:
+      - "${WEBUI_PORT:-3000}:8080"
+    volumes:
+      - open_webui_data:/app/backend/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WEBUI_AUTH=${WEBUI_AUTH:-true}
+      - WEBUI_NAME=${WEBUI_NAME:-AI Survival Kit}
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP:-true}
+
+  model-puller:
+    image: curlimages/curl:latest
+    container_name: ask-model-puller
+    profiles: [basic, creator, bunker]
+    depends_on:
+      - ollama
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Esperando a Ollama...";
+        until curl -sf http://ollama:11434/api/tags > /dev/null; do sleep 2; done;
+        echo "Descargando modelo por defecto: ${DEFAULT_MODEL:-qwen2.5:3b}";
+        curl -s http://ollama:11434/api/pull -d "{\"name\":\"${DEFAULT_MODEL:-qwen2.5:3b}\"}";
+        echo "Listo.";
+
+  # ─────────────────────────────────────────────────────────────
+  # Perfil CREATOR: imagen, vídeo, voz, transcripción
+  # ─────────────────────────────────────────────────────────────
+
+  # ComfyUI — generación de imagen y vídeo (FLUX, SDXL, Wan, Hunyuan...)
+  # Los modelos NO se descargan automáticamente (pesan demasiado).
+  # Ponlos en ./creator-data/comfyui/models/ siguiendo la estructura de ComfyUI:
+  #   models/checkpoints/   (SDXL, etc.)
+  #   models/unet/          (FLUX)
+  #   models/vae/
+  #   models/clip/
+  #   models/loras/
+  # Ver docs/creator-models.md para links de descarga.
+  # Solo funciona en Linux x86_64 con GPU NVIDIA. En Mac (ARM64) no hay imagen
+  # compatible; instala ComfyUI nativo: https://github.com/comfyanonymous/ComfyUI
+  comfyui:
+    image: yanwk/comfyui-boot:cu124-slim
+    container_name: ask-comfyui
+    platform: linux/amd64
+    profiles: [image, bunker-gpu]
+    restart: unless-stopped
+    ports:
+      - "${COMFYUI_PORT:-8188}:8188"
+    volumes:
+      - ./creator-data/comfyui:/root
+    environment:
+      - CLI_ARGS=${COMFYUI_CLI_ARGS:-}
+    # En Mac sin GPU NVIDIA esto irá en CPU: lentísimo para imagen, inviable para vídeo.
+    # Recomendación: instala ComfyUI nativo (https://github.com/comfyanonymous/ComfyUI)
+    # y comenta este servicio.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # faster-whisper-server — transcripción (STT) con API compatible con OpenAI.
+  # Endpoint: http://localhost:8001/v1/audio/transcriptions
+  # Drop-in para cualquier cliente que use la API de OpenAI Whisper.
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: ask-whisper
+    profiles: [creator, bunker]
+    restart: unless-stopped
+    ports:
+      - "${WHISPER_PORT:-8001}:8000"
+    volumes:
+      - whisper_data:/root/.cache/huggingface
+    environment:
+      - WHISPER__MODEL=${WHISPER_MODEL:-Systran/faster-whisper-small}
+      - WHISPER__COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+    # Para GPU NVIDIA usa la imagen `fedirz/faster-whisper-server:latest-cuda`
+    # y descomenta el bloque deploy.
+
+  # Kokoro TTS — voz sintética con API compatible con OpenAI.
+  # Endpoint: http://localhost:8002/v1/audio/speech
+  # Drop-in para cualquier cliente que use la API de OpenAI TTS.
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: ask-kokoro
+    profiles: [creator, bunker]
+    restart: unless-stopped
+    ports:
+      - "${KOKORO_PORT:-8002}:8880"
+    volumes:
+      - kokoro_data:/app/api/src/voices
+    # Para GPU NVIDIA usa la imagen `ghcr.io/remsky/kokoro-fastapi-gpu:latest`
+    # y descomenta el bloque deploy.
+
+  # ─────────────────────────────────────────────────────────────
+  # Perfil BUNKER: proxy compatible con OpenAI
+  # ─────────────────────────────────────────────────────────────
+
+  # LiteLLM — un único endpoint en :4000 que habla OpenAI API y enruta:
+  #   chat/completions       -> Ollama (qwen2.5)
+  #   audio/transcriptions   -> faster-whisper-server
+  #   audio/speech           -> Kokoro
+  #
+  # Tu app sigue apuntando a "openai" pero todo se queda en local.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: ask-litellm
+    profiles: [bunker]
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - whisper
+      - kokoro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    environment:
+      - LITELLM_LOG=${LITELLM_LOG:-INFO}
+
+volumes:
+  ollama_data:
+  open_webui_data:
+  whisper_data:
+  kokoro_data:

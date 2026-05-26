@@ -1,0 +1,75 @@
+# ──────────────────────────────────────────────────────────────────────────
+# LiteLLM — proxy compatible con la API de OpenAI.
+#
+# Mapea los nombres de modelo que usan los clientes de OpenAI (gpt-4o,
+# gpt-4o-mini, whisper-1, tts-1...) a los backends locales del kit.
+#
+# Resultado: tu app sigue llamando a "gpt-4o" pero por debajo va a Ollama.
+# Sin tocar código.
+# ──────────────────────────────────────────────────────────────────────────
+
+model_list:
+  # ── Chat / completions ──────────────────────────────────────────────────
+  # Mapeamos los nombres más comunes de OpenAI a Qwen 2.5 corriendo en Ollama.
+  # Cambia el `model:` por el que tengas descargado en Ollama.
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: ollama_chat/qwen2.5:7b
+      api_base: http://ollama:11434
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: ollama_chat/qwen2.5:3b
+      api_base: http://ollama:11434
+
+  - model_name: gpt-4-turbo
+    litellm_params:
+      model: ollama_chat/qwen2.5:7b
+      api_base: http://ollama:11434
+
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: ollama_chat/qwen2.5:3b
+      api_base: http://ollama:11434
+
+  # Acceso directo por nombre real, por si tu cliente quiere ser explícito.
+  - model_name: qwen2.5
+    litellm_params:
+      model: ollama_chat/qwen2.5:3b
+      api_base: http://ollama:11434
+
+  - model_name: qwen2.5-coder
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:7b
+      api_base: http://ollama:11434
+
+  # ── Transcripción (audio -> texto) ──────────────────────────────────────
+  # Mapeamos whisper-1 de OpenAI a faster-whisper-server local.
+  - model_name: whisper-1
+    litellm_params:
+      model: openai/Systran/faster-whisper-small
+      api_base: http://whisper:8000/v1
+      api_key: "not-needed"
+
+  # ── Voz (texto -> audio) ────────────────────────────────────────────────
+  # Mapeamos tts-1 y tts-1-hd de OpenAI a Kokoro local.
+  - model_name: tts-1
+    litellm_params:
+      model: openai/kokoro
+      api_base: http://kokoro:8880/v1
+      api_key: "not-needed"
+
+  - model_name: tts-1-hd
+    litellm_params:
+      model: openai/kokoro
+      api_base: http://kokoro:8880/v1
+      api_key: "not-needed"
+
+litellm_settings:
+  drop_params: true        # ignora parámetros que el backend local no entienda en lugar de fallar
+  set_verbose: false
+
+general_settings:
+  # Si quieres exigir API key para llamar al proxy, descomenta y pon una.
+  # master_key: sk-survival-kit-change-me
